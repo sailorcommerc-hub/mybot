@@ -69,6 +69,18 @@ def display_name(user) -> str:
     return first_name or f"ID {getattr(user, 'id', '?')}"
 
 
+def display_name_notag(user) -> str:
+    """Имя для списков/топов — никогда не создаёт кликабельный тег-упоминание.
+    Не использует @username (это создаёт notify-ссылку в Telegram)."""
+    first_name = getattr(user, "first_name", None)
+    if first_name:
+        return first_name
+    username = getattr(user, "username", None)
+    if username:
+        return username
+    return f"ID {getattr(user, 'id', '?')}"
+
+
 # ── БАЗА ДАННЫХ ──────────────────────────────────────────────────────────────
 
 async def create_db():
@@ -159,6 +171,12 @@ async def reset_all_balances():
         await db.commit()
 
 
+async def reset_all_cooldowns():
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("UPDATE users SET last_earn = 0")
+        await db.commit()
+
+
 # ── КЛАВИАТУРЫ ───────────────────────────────────────────────────────────────
 
 def welcome_keyboard() -> InlineKeyboardMarkup:
@@ -196,6 +214,15 @@ def reset_all_confirm_keyboard(admin_id: int) -> InlineKeyboardMarkup:
     ])
 
 
+def reset_cd_confirm_keyboard(admin_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="✅ Да, обнулить кд", callback_data=f"reset_cd_confirm:{admin_id}"),
+            InlineKeyboardButton(text="❌ Отмена", callback_data=f"reset_cd_cancel:{admin_id}"),
+        ]
+    ])
+
+
 def commands_text() -> str:
     return (
         f"📌 <b>Команды бота:</b>\n\n"
@@ -214,7 +241,8 @@ def commands_text() -> str:
         f"• <b>начислить [сумма]</b>\n"
         f"• <b>списать [сумма]</b>\n\n"
         f"<i>Админ (без реплая):</i>\n"
-        f"• <b>обнулить всех</b> — списать тинки у всех игроков сразу"
+        f"• <b>обнулить всех</b> — списать тинки у всех игроков сразу\n"
+        f"• <b>обнулить кд</b> — сбросить кулдаун команды «ворк» у всех игроков"
     )
 
 
@@ -478,6 +506,27 @@ async def cb_reset_all_cancel(call: CallbackQuery):
 
     await call.answer()
     await call.message.edit_text("❌ Обнуление отменено")
+
+
+@dp.callback_query(F.data.startswith("reset_cd_confirm:"))
+async def cb_reset_cd_confirm(call: CallbackQuery):
+    admin_id = int(call.data.split(":")[1])
+    if call.from_user.id != admin_id:
+        return await call.answer("❌ Это не твоё подтверждение", show_alert=True)
+
+    await reset_all_cooldowns()
+    await call.answer()
+    await call.message.edit_text("⏱️ Кулдаун «ворк» сброшен у всех игроков — можно снова зарабатывать")
+
+
+@dp.callback_query(F.data.startswith("reset_cd_cancel:"))
+async def cb_reset_cd_cancel(call: CallbackQuery):
+    admin_id = int(call.data.split(":")[1])
+    if call.from_user.id != admin_id:
+        return await call.answer("❌ Это не твоё подтверждение", show_alert=True)
+
+    await call.answer()
+    await call.message.edit_text("❌ Сброс кулдауна отменён")
 
 
 async def resolve_target_user(message: Message):
@@ -815,7 +864,7 @@ async def router(message: Message):
     if text == "топ богачей":
         async with aiosqlite.connect(DB_PATH) as db:
             cursor = await db.execute(
-                "SELECT user_id, balance FROM users ORDER BY balance DESC LIMIT 10"
+                "SELECT user_id, balance FROM users ORDER BY balance DESC LIMIT 50"
             )
             rows = await cursor.fetchall()
 
@@ -828,7 +877,7 @@ async def router(message: Message):
         for i, (row_uid, bal) in enumerate(rows, 1):
             try:
                 user = await bot.get_chat(row_uid)
-                name = display_name(user)
+                name = display_name_notag(user)
             except Exception:
                 name = f"ID {row_uid}"
 
@@ -845,6 +894,16 @@ async def router(message: Message):
             "⚠️ Ты уверен, что хочешь списать <b>все тинки у всех игроков</b> без исключения?\n"
             "Это действие необратимо.",
             reply_markup=reset_all_confirm_keyboard(uid)
+        )
+
+    # ОБНУЛИТЬ КД (админ, требует подтверждения)
+    if text == "обнулить кд":
+        if uid not in ADMIN_IDS:
+            return
+        return await message.answer(
+            "⚠️ Сбросить кулдаун команды «ворк» у <b>всех игроков</b>?\n"
+            "После этого все смогут сразу же снова заработать тинки.",
+            reply_markup=reset_cd_confirm_keyboard(uid)
         )
 
     # НАЧИСЛИТЬ (админ)
