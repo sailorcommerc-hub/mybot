@@ -153,6 +153,12 @@ async def transfer_balance(from_id: int, to_id: int, amount: int) -> bool:
         return True
 
 
+async def reset_all_balances():
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("UPDATE users SET balance = 0")
+        await db.commit()
+
+
 # ── КЛАВИАТУРЫ ───────────────────────────────────────────────────────────────
 
 def welcome_keyboard() -> InlineKeyboardMarkup:
@@ -181,6 +187,15 @@ def duel_accept_keyboard(chat_id: int) -> InlineKeyboardMarkup:
     ])
 
 
+def reset_all_confirm_keyboard(admin_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="✅ Да, обнулить всё", callback_data=f"reset_all_confirm:{admin_id}"),
+            InlineKeyboardButton(text="❌ Отмена", callback_data=f"reset_all_cancel:{admin_id}"),
+        ]
+    ])
+
+
 def commands_text() -> str:
     return (
         f"📌 <b>Команды бота:</b>\n\n"
@@ -197,7 +212,9 @@ def commands_text() -> str:
         f"• <b>ставка [а/б] [сумма]</b> — ставка на исход дуэли (только во время сбора ставок)\n\n"
         f"<i>Админ-команды (реплай):</i>\n"
         f"• <b>начислить [сумма]</b>\n"
-        f"• <b>списать [сумма]</b>"
+        f"• <b>списать [сумма]</b>\n\n"
+        f"<i>Админ (без реплая):</i>\n"
+        f"• <b>обнулить всех</b> — списать тинки у всех игроков сразу"
     )
 
 
@@ -440,6 +457,27 @@ async def cb_duel_decline(call: CallbackQuery):
     del duels[chat_id]
     await call.answer()
     await call.message.edit_text(f"❌ {duel['b_name']} отклонил вызов от {duel['a_name']}")
+
+
+@dp.callback_query(F.data.startswith("reset_all_confirm:"))
+async def cb_reset_all_confirm(call: CallbackQuery):
+    admin_id = int(call.data.split(":")[1])
+    if call.from_user.id != admin_id:
+        return await call.answer("❌ Это не твоё подтверждение", show_alert=True)
+
+    await reset_all_balances()
+    await call.answer()
+    await call.message.edit_text("💥 Балансы всех игроков обнулены (0 тинки у всех)")
+
+
+@dp.callback_query(F.data.startswith("reset_all_cancel:"))
+async def cb_reset_all_cancel(call: CallbackQuery):
+    admin_id = int(call.data.split(":")[1])
+    if call.from_user.id != admin_id:
+        return await call.answer("❌ Это не твоё подтверждение", show_alert=True)
+
+    await call.answer()
+    await call.message.edit_text("❌ Обнуление отменено")
 
 
 async def resolve_target_user(message: Message):
@@ -798,6 +836,16 @@ async def router(message: Message):
             lines.append(f"{prefix} {name} — {fmt(bal)} тинки {TINKY_EMOJI}")
 
         return await message.answer("\n".join(lines))
+
+    # ОБНУЛИТЬ ВСЕХ (админ, требует подтверждения)
+    if text == "обнулить всех":
+        if uid not in ADMIN_IDS:
+            return
+        return await message.answer(
+            "⚠️ Ты уверен, что хочешь списать <b>все тинки у всех игроков</b> без исключения?\n"
+            "Это действие необратимо.",
+            reply_markup=reset_all_confirm_keyboard(uid)
+        )
 
     # НАЧИСЛИТЬ (админ)
     if text.startswith("начислить"):
