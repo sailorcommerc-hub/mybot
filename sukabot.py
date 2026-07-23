@@ -370,6 +370,13 @@ async def cb_roulette(call: CallbackQuery):
         f"🎡 Крутим рулетку...\n"
         f"Ставка: <b>{fmt(amount)}</b> тинки на {choice_name}"
     )
+
+    # ФИКС: списываем ставку сразу, до розыгрыша, а не только в ветке проигрыша.
+    # Раньше при выигрыше ставка не списывалась вообще, а сверху начислялся
+    # payout = amount * multiplier — из-за этого игрок получал на сумму ставки
+    # больше, чем должен (x2 фактически превращался в x3).
+    await change_balance(owner_id, -amount)
+
     await asyncio.sleep(1.5)
 
     number, color = roulette_spin()
@@ -382,7 +389,6 @@ async def cb_roulette(call: CallbackQuery):
         await change_balance(owner_id, payout)
         net = payout - amount
     else:
-        await change_balance(owner_id, -amount)
         net = -amount
 
     new_bal = await get_balance(owner_id)
