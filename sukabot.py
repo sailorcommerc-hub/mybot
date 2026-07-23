@@ -12,7 +12,8 @@ TOKEN = "8882192556:AAF3oDo4sabJSHr1-E-0YxzNjzSPp8rsTO0"
 
 ADMIN_IDS = [
     5966445013,
-    5274203328
+    5274203328,
+    509526176
 ]
 
 TINKY = "⚡"  # кастомный прем эмодзи (ID: 5469663696387087636)
@@ -46,12 +47,42 @@ SLOT_PAYOUTS_TRIPLE = {
 }
 SLOT_PAYOUT_PAIR = 1.2  # множитель за любую пару из трёх (утешительный приз)
 
+# ── РУЛЕТКА (р казик) ────────────────────────────────────────────────────────
+ROULETTE_RED_NUMBERS = {1, 3, 5, 7, 9, 12, 14, 16, 18, 19, 21, 23, 25, 27, 30, 32, 34, 36}
+
+ROULETTE_PAYOUTS = {
+    "red": 2,
+    "black": 2,
+    "green": 14,
+}
+
+ROULETTE_COLOR_NAMES = {
+    "red": "Красное 🔴",
+    "black": "Чёрное ⚫",
+    "green": "Зеро 🟢",
+}
+
+
+def roulette_spin():
+    number = random.randint(0, 36)
+    if number == 0:
+        color = "green"
+    elif number in ROULETTE_RED_NUMBERS:
+        color = "red"
+    else:
+        color = "black"
+    return number, color
+
+
 bot = Bot(token=TOKEN, default=DefaultBotProperties(parse_mode="HTML"))
 dp = Dispatcher()
 
 # ── ГЛОБАЛЬНОЕ СОСТОЯНИЕ ДУЭЛЕЙ (in-memory, сбрасывается при рестарте) ───────
 # chat_id -> dict с данными активной дуэли
 duels: dict[int, dict] = {}
+
+# ── ВКЛ/ВЫКЛ КАЗИНО (in-memory, сбрасывается при рестарте) ──────────────────
+casino_enabled = True
 
 
 # ── ВСПОМОГАТЕЛЬНОЕ ──────────────────────────────────────────────────────────
@@ -187,11 +218,14 @@ def welcome_keyboard() -> InlineKeyboardMarkup:
     ])
 
 
-def coin_keyboard(owner_id: int, amount: int) -> InlineKeyboardMarkup:
+def roulette_keyboard(owner_id: int, amount: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [
-            InlineKeyboardButton(text="🦅 Орёл", callback_data=f"coin:{owner_id}:{amount}:orel"),
-            InlineKeyboardButton(text="🪙 Решка", callback_data=f"coin:{owner_id}:{amount}:reshka"),
+            InlineKeyboardButton(text="🔴 Красное (x2)", callback_data=f"roulette:{owner_id}:{amount}:red"),
+            InlineKeyboardButton(text="⚫ Чёрное (x2)", callback_data=f"roulette:{owner_id}:{amount}:black"),
+        ],
+        [
+            InlineKeyboardButton(text="🟢 Зеро (x14)", callback_data=f"roulette:{owner_id}:{amount}:green"),
         ]
     ])
 
@@ -230,19 +264,24 @@ def commands_text() -> str:
         f"• <b>счёт</b> (реплай) — баланс другого игрока\n"
         f"• <b>ворк</b> — заработать тинки (КД 2 часа)\n"
         f"• <b>дать [сумма]</b> (реплай) — перевести тинки другому игроку\n"
-        f"• <b>топ богачей</b> — рейтинг игроков\n"
+        f"• <b>топ богачей</b> — рейтинг игроков (от 2 тинки на счету)\n"
         f"• <b>коммандс</b> — список команд\n\n"
         f"<i>Казино:</i>\n"
-        f"• <b>м казик [сумма]</b> — монетка орёл/решка (x2)\n"
+        f"• <b>р казик [сумма]</b> — рулетка 🎡: красное/чёрное (x2) или зеро (x14)\n"
         f"• <b>с казик [сумма]</b> — слоты 🎰 (3 одинаковых — джекпот)\n"
         f"• <b>батл [сумма] @юзер</b> (или реплаем) — русская рулетка, стреляешь в себя (1/6)\n"
         f"• <b>ставка [а/б] [сумма]</b> — ставка на исход дуэли (только во время сбора ставок)\n\n"
         f"<i>Админ-команды (реплай):</i>\n"
         f"• <b>начислить [сумма]</b>\n"
         f"• <b>списать [сумма]</b>\n\n"
+        f"<i>Админ-команды (по юзернейму, без реплая):</i>\n"
+        f"• <b>@юзер начислить [сумма]</b>\n"
+        f"• <b>@юзер списать [сумма]</b>\n\n"
         f"<i>Админ (без реплая):</i>\n"
         f"• <b>обнулить всех</b> — списать тинки у всех игроков сразу\n"
-        f"• <b>обнулить кд</b> — сбросить кулдаун команды «ворк» у всех игроков"
+        f"• <b>обнулить кд</b> — сбросить кулдаун команды «ворк» у всех игроков\n"
+        f"• <b>выключить казик</b> — отключить казино (р казик / с казик)\n"
+        f"• <b>включить казик</b> — снова включить казино"
     )
 
 
@@ -305,10 +344,10 @@ async def cb_work(call: CallbackQuery):
     )
 
 
-# ── КАЗИНО: МОНЕТКА (м казик [сумма]) ───────────────────────────────────────
+# ── КАЗИНО: РУЛЕТКА (р казик [сумма]) ───────────────────────────────────────
 
-@dp.callback_query(F.data.startswith("coin:"))
-async def cb_coin(call: CallbackQuery):
+@dp.callback_query(F.data.startswith("roulette:"))
+async def cb_roulette(call: CallbackQuery):
     _, owner_id_str, amount_str, choice = call.data.split(":")
     owner_id = int(owner_id_str)
     amount = int(amount_str)
@@ -316,33 +355,50 @@ async def cb_coin(call: CallbackQuery):
     if call.from_user.id != owner_id:
         return await call.answer("❌ Это не твоя ставка!", show_alert=True)
 
+    if not casino_enabled:
+        await call.answer()
+        return await call.message.edit_text("🚫 Казино сейчас отключено администрацией")
+
     await call.answer()
 
     bal = await get_balance(owner_id)
     if bal < amount:
         return await call.message.edit_text("❌ Недостаточно тинки на счету — ставка отменена")
 
-    result = random.choice(["orel", "reshka"])
-    win = (result == choice)
+    choice_name = ROULETTE_COLOR_NAMES[choice]
+    await call.message.edit_text(
+        f"🎡 Крутим рулетку...\n"
+        f"Ставка: <b>{fmt(amount)}</b> тинки на {choice_name}"
+    )
+    await asyncio.sleep(1.5)
 
-    await change_balance(owner_id, amount if win else -amount)
+    number, color = roulette_spin()
+    win = (color == choice)
+    result_name = ROULETTE_COLOR_NAMES[color]
+
+    if win:
+        multiplier = ROULETTE_PAYOUTS[choice]
+        payout = amount * multiplier
+        await change_balance(owner_id, payout)
+        net = payout - amount
+    else:
+        await change_balance(owner_id, -amount)
+        net = -amount
+
     new_bal = await get_balance(owner_id)
-
-    result_text = "Орёл 🦅" if result == "orel" else "Решка 🪙"
-    choice_text = "Орёл 🦅" if choice == "orel" else "Решка 🪙"
 
     if win:
         text = (
-            f"🎉 Выпало: <b>{result_text}</b>\n"
-            f"Ты выбрал: <b>{choice_text}</b> — победа!\n"
-            f"💰 +{fmt(amount)} тинки {TINKY_EMOJI}\n"
+            f"🎡 Выпало число: <b>{number}</b> ({result_name})\n"
+            f"Ты поставил на: <b>{choice_name}</b> — победа!\n"
+            f"💰 +{fmt(net)} тинки {TINKY_EMOJI}\n"
             f"💎 Счёт: <b>{fmt(new_bal)}</b>"
         )
     else:
         text = (
-            f"😢 Выпало: <b>{result_text}</b>\n"
-            f"Ты выбрал: <b>{choice_text}</b> — проигрыш\n"
-            f"💸 -{fmt(amount)} тинки {TINKY_EMOJI}\n"
+            f"🎡 Выпало число: <b>{number}</b> ({result_name})\n"
+            f"Ты поставил на: <b>{choice_name}</b> — проигрыш\n"
+            f"💸 {fmt(net)} тинки {TINKY_EMOJI}\n"
             f"💎 Счёт: <b>{fmt(new_bal)}</b>"
         )
 
@@ -552,11 +608,59 @@ async def resolve_target_user(message: Message):
 
 @dp.message(F.text)
 async def router(message: Message):
+    global casino_enabled
     raw_parts = message.text.strip().split()
     text = message.text.lower().strip()
     parts = text.split()
     uid = message.from_user.id
     chat_id = message.chat.id
+
+    # НАЧИСЛИТЬ/СПИСАТЬ ПО @USERNAME (админ, без реплая): "@юзер начислить 100"
+    if (
+        raw_parts
+        and raw_parts[0].startswith("@")
+        and len(raw_parts) >= 3
+        and raw_parts[1].lower() in ("начислить", "списать")
+    ):
+        if uid not in ADMIN_IDS:
+            return
+
+        username = raw_parts[0][1:]
+        cmd = raw_parts[1].lower()
+
+        try:
+            amount = int(raw_parts[2])
+        except ValueError:
+            return await message.answer(f"❌ Укажи сумму: @{username} {cmd} [сумма]")
+
+        if amount <= 0:
+            return await message.answer("❌ Сумма должна быть больше нуля")
+
+        try:
+            target = await bot.get_chat(f"@{username}")
+        except Exception:
+            return await message.answer(f"❌ Не удалось найти пользователя @{username}")
+
+        await ensure_user(target.id)
+        name = display_name(target)
+
+        if cmd == "начислить":
+            await change_balance(target.id, amount)
+            bal = await get_balance(target.id)
+            return await message.answer(
+                f"✅ <b>{name}</b>: +{fmt(amount)} тинки {TINKY_EMOJI}\n"
+                f"💎 Баланс: <b>{fmt(bal)}</b>"
+            )
+        else:
+            bal = await get_balance(target.id)
+            if bal < amount:
+                return await message.answer("❌ Недостаточно тинки")
+            await change_balance(target.id, -amount)
+            new_bal = await get_balance(target.id)
+            return await message.answer(
+                f"💸 <b>{name}</b>: -{fmt(amount)} тинки {TINKY_EMOJI}\n"
+                f"💎 Баланс: <b>{fmt(new_bal)}</b>"
+            )
 
     # КОММАНДС
     if text == "коммандс":
@@ -598,12 +702,15 @@ async def router(message: Message):
             f"💎 Счёт: <b>{fmt(bal)}</b> тинки"
         )
 
-    # КАЗИНО: М КАЗИК (монетка)
-    if len(parts) >= 3 and parts[0] == "м" and parts[1] == "казик":
+    # КАЗИНО: Р КАЗИК (рулетка)
+    if len(parts) >= 3 and parts[0] == "р" and parts[1] == "казик":
+        if not casino_enabled:
+            return await message.answer("🚫 Казино сейчас отключено администрацией")
+
         try:
             amount = int(parts[2])
         except ValueError:
-            return await message.answer("❌ Сумма должна быть числом: м казик [сумма]")
+            return await message.answer("❌ Сумма должна быть числом: р казик [сумма]")
 
         if amount <= 0:
             return await message.answer("❌ Сумма должна быть больше нуля")
@@ -614,13 +721,16 @@ async def router(message: Message):
             return await message.answer("❌ Недостаточно тинки на счету")
 
         return await message.answer(
-            f"🎰 Ставка: <b>{fmt(amount)}</b> тинки {TINKY_EMOJI}\n"
-            f"Выбери сторону монеты:",
-            reply_markup=coin_keyboard(uid, amount)
+            f"🎡 Ставка: <b>{fmt(amount)}</b> тинки {TINKY_EMOJI}\n"
+            f"Выбери, на что ставишь:",
+            reply_markup=roulette_keyboard(uid, amount)
         )
 
     # КАЗИНО: С КАЗИК (слоты)
     if len(parts) >= 3 and parts[0] == "с" and parts[1] == "казик":
+        if not casino_enabled:
+            return await message.answer("🚫 Казино сейчас отключено администрацией")
+
         try:
             amount = int(parts[2])
         except ValueError:
@@ -864,7 +974,7 @@ async def router(message: Message):
     if text == "топ богачей":
         async with aiosqlite.connect(DB_PATH) as db:
             cursor = await db.execute(
-                "SELECT user_id, balance FROM users ORDER BY balance DESC LIMIT 50"
+                "SELECT user_id, balance FROM users WHERE balance > 1 ORDER BY balance DESC LIMIT 50"
             )
             rows = await cursor.fetchall()
 
@@ -885,6 +995,20 @@ async def router(message: Message):
             lines.append(f"{prefix} {name} — {fmt(bal)} тинки {TINKY_EMOJI}")
 
         return await message.answer("\n".join(lines))
+
+    # ВЫКЛЮЧИТЬ КАЗИК (админ)
+    if text == "выключить казик":
+        if uid not in ADMIN_IDS:
+            return
+        casino_enabled = False
+        return await message.answer("🚫 Казино отключено — «р казик» и «с казик» больше не работают")
+
+    # ВКЛЮЧИТЬ КАЗИК (админ)
+    if text == "включить казик":
+        if uid not in ADMIN_IDS:
+            return
+        casino_enabled = True
+        return await message.answer("✅ Казино снова включено")
 
     # ОБНУЛИТЬ ВСЕХ (админ, требует подтверждения)
     if text == "обнулить всех":
